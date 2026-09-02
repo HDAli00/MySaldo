@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { decryptIban, encryptIban, ibanLastFour, normalizeIban } from "@/lib/iban";
 import { parseIngCsv, type ParsedIngTransaction } from "@/lib/csv/ing-parser";
+import { categorizeUncategorizedTransactions } from "@/lib/categorize";
 
 export interface ImportReport {
   importId: string;
@@ -203,6 +204,8 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
       }
     }
   }
+
+  await categorizeUncategorizedTransactions(user.id);
 
   return {
     importId: importRecord.id,
