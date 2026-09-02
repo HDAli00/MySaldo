@@ -1,0 +1,97 @@
+// Saldo — Phase 1 data model (see PROJECT_PLAN.md section 7)
+// Only the models needed for Phase 1 (Foundation) are defined here.
+// Category, CategorizationRule, Budget and RecurringPayment are added in later phases.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(cuid())
+  currency  String    @default("EUR")
+  createdAt DateTime  @default(now()) @map("created_at")
+  accounts  Account[]
+
+  @@map("users")
+}
+
+model Account {
+  id                    String        @id @default(cuid())
+  userId                String        @map("user_id")
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                  String
+  ibanEncrypted         String        @unique @map("iban_encrypted")
+  ibanLastFour          String        @map("iban_last_four")
+  bankName              String        @default("ING") @map("bank_name")
+  accountType           String?       @map("account_type")
+  latestBalance         Decimal?      @map("latest_balance") @db.Decimal(12, 2)
+  latestTransactionDate DateTime?     @map("latest_transaction_date")
+  createdAt             DateTime      @default(now()) @map("created_at")
+  transactions          Transaction[]
+  imports               Import[]
+
+  @@map("accounts")
+}
+
+enum TransactionDirection {
+  INCOME
+  EXPENSE
+}
+
+model Transaction {
+  id                        String                @id @default(cuid())
+  accountId                 String                @map("account_id")
+  account                   Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transactionDate           DateTime              @map("transaction_date")
+  description                String
+  merchant                  String?
+  counterpartyIbanEncrypted String?               @map("counterparty_iban_encrypted")
+  counterpartyIbanLastFour  String?               @map("counterparty_iban_last_four")
+  amount                    Decimal               @db.Decimal(12, 2)
+  direction                 TransactionDirection
+  categoryId                String?               @map("category_id")
+  mutationCode              String?               @map("mutation_code")
+  mutationType              String?               @map("mutation_type")
+  balanceAfterTransaction   Decimal?              @map("balance_after_transaction") @db.Decimal(12, 2)
+  tag                       String?
+  isTransfer                Boolean               @default(false) @map("is_transfer")
+  isRecurring               Boolean               @default(false) @map("is_recurring")
+  notes                     String?
+  sourceImportId            String                @map("source_import_id")
+  sourceImport              Import                @relation(fields: [sourceImportId], references: [id], onDelete: Cascade)
+  duplicateFingerprint      String                @unique @map("duplicate_fingerprint")
+  createdAt                 DateTime              @default(now()) @map("created_at")
+
+  @@index([accountId, transactionDate])
+  @@map("transactions")
+}
+
+enum ImportStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Import {
+  id               String        @id @default(cuid())
+  fileName         String        @map("file_name")
+  accountId        String?       @map("account_id")
+  account          Account?      @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  fileHash         String        @unique @map("file_hash")
+  status           ImportStatus  @default(PROCESSING)
+  importedAt       DateTime      @default(now()) @map("imported_at")
+  dateFrom         DateTime?     @map("date_from")
+  dateTo           DateTime?     @map("date_to")
+  rowsSeen         Int           @default(0) @map("rows_seen")
+  rowsImported     Int           @default(0) @map("rows_imported")
+  duplicatesSkipped Int          @default(0) @map("duplicates_skipped")
+  errors           Json?
+  transactions     Transaction[]
+
+  @@map("imports")
+}
