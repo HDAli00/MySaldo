@@ -48,6 +48,22 @@ export const UNCATEGORIZED = "Uncategorized";
 export const TRANSFERS = "Transfers";
 export const INCOME = "Income";
 
+/**
+ * Categories that are conceptually "fixed" recurring bills — rent, energy,
+ * subscriptions, insurance — as opposed to discretionary spending (groceries,
+ * shopping, restaurants, travel...) that can also recur by coincidence.
+ * Used to keep the upcoming-fixed-expenses forecast from flagging "I happened
+ * to shop at the same store twice" as a bill.
+ */
+export const FIXED_EXPENSE_CATEGORIES = new Set([
+  "Housing",
+  "Utilities",
+  "Subscriptions",
+  "Insurance",
+  "Fees",
+  "Education",
+]);
+
 /** CSS custom property for a category's chart color (see globals.css). */
 export function categoryColorVar(slot: CategorySlot): string {
   return `var(--series-${slot})`;

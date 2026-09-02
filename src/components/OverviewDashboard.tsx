@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useAccountScope } from "@/lib/account-scope";
 import { StatTile } from "@/components/StatTile";
 import { CategoryBarChart, CumulativeNetChart, IncomeExpenseChart } from "@/components/OverviewCharts";
+import { ConfigurableChartCard } from "@/components/ConfigurableChartCard";
+import { UpcomingExpenses } from "@/components/UpcomingExpenses";
 
 interface OverviewResponse {
   month: string;
@@ -152,6 +154,14 @@ export function OverviewDashboard() {
                 <CumulativeNetChart data={data.dailyCashFlow} />
               </div>
             </div>
+          </div>
+
+          <div className="mt-6">
+            <ConfigurableChartCard month={data.month} />
+          </div>
+
+          <div className="mt-6">
+            <UpcomingExpenses month={data.month} />
           </div>
 
           <div className="mt-6 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">

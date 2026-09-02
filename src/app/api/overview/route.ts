@@ -3,25 +3,9 @@ import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { maskIban } from "@/lib/iban";
 import { assignChartColors, categoryColorVar } from "@/lib/categories";
+import { dateKey, monthBounds, toMonthString } from "@/lib/date-range";
 
 const MAX_CATEGORY_SLOTS = 7; // + one "Other" bucket, per the dataviz 8-series cap
-
-function monthBounds(month: string): { start: Date; end: Date } {
-  const [yearStr, monthStr] = month.split("-");
-  const year = Number(yearStr);
-  const monthIndex = Number(monthStr) - 1;
-  const start = new Date(Date.UTC(year, monthIndex, 1));
-  const end = new Date(Date.UTC(year, monthIndex + 1, 1));
-  return { start, end };
-}
-
-function toMonthString(date: Date): string {
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
-function dateKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
 
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;

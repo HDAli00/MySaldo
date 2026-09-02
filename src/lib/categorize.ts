@@ -35,11 +35,25 @@ const KEYWORD_RULES: { category: string; keywords: string[] }[] = [
   },
   {
     category: "Health",
-    keywords: ["APOTHEEK", "HUISARTS", "ZORGVERZEKERAAR", " CZ ", "VGZ", "ZILVEREN KRUIS", "MENZIS", "TANDARTS", "FYSIOTHERAPIE"],
+    keywords: ["APOTHEEK", "HUISARTS", "TANDARTS", "FYSIOTHERAPIE"],
   },
   {
+    // Health insurance premiums are a fixed monthly bill, unlike ad-hoc apotheek/huisarts
+    // visits — grouped under Insurance rather than Health for that reason.
     category: "Insurance",
-    keywords: ["VERZEKERING", "ASR ", "INTERPOLIS", "CENTRAAL BEHEER", "UNIVE", "FBTO"],
+    keywords: [
+      "VERZEKERING",
+      "ZORGVERZEKERAAR",
+      " CZ ",
+      "VGZ",
+      "ZILVEREN KRUIS",
+      "MENZIS",
+      "ASR ",
+      "INTERPOLIS",
+      "CENTRAAL BEHEER",
+      "UNIVE",
+      "FBTO",
+    ],
   },
   {
     category: "Shopping",
