@@ -2,9 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { runIngImport } from "@/lib/import";
 import { maskIban } from "@/lib/iban";
+import { getSession } from "@/lib/auth/session";
 
 export async function GET() {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const imports = await db.import.findMany({
+    where: { userId: session.user.id },
     orderBy: { importedAt: "desc" },
     include: { account: true },
     take: 50,
@@ -30,6 +35,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const formData = await request.formData();
   const file = formData.get("file");
 
@@ -43,7 +51,7 @@ export async function POST(request: NextRequest) {
   const fileContent = await file.text();
 
   try {
-    const report = await runIngImport(file.name, fileContent);
+    const report = await runIngImport(session.user.id, file.name, fileContent);
 
     if (report.missingColumns.length > 0) {
       return NextResponse.json(

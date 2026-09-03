@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { maskIban } from "@/lib/iban";
+import { requireUser } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
-async function getAccounts() {
-  const accounts = await db.account.findMany({ orderBy: { createdAt: "asc" } });
+async function getAccounts(userId: string) {
+  const accounts = await db.account.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });
   return Promise.all(
     accounts.map(async (account) => {
       const transactionCount = await db.transaction.count({ where: { accountId: account.id } });
@@ -23,7 +24,8 @@ async function getAccounts() {
 }
 
 export default async function AccountsPage() {
-  const accounts = await getAccounts();
+  const user = await requireUser();
+  const accounts = await getAccounts(user.id);
 
   return (
     <div className="mx-auto max-w-4xl">

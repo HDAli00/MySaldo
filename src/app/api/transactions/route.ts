@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { maskIban } from "@/lib/iban";
+import { getSession } from "@/lib/auth/session";
 
 export async function GET(request: NextRequest) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const params = request.nextUrl.searchParams;
   const accountId = params.get("accountId");
   const q = params.get("q")?.trim();
@@ -12,7 +16,7 @@ export async function GET(request: NextRequest) {
   const page = Math.max(1, Number(params.get("page") ?? "1"));
   const pageSize = Math.min(100, Math.max(1, Number(params.get("pageSize") ?? "50")));
 
-  const where: Prisma.TransactionWhereInput = {};
+  const where: Prisma.TransactionWhereInput = { account: { userId: session.user.id } };
   if (accountId) where.accountId = accountId;
   if (q) where.description = { contains: q, mode: "insensitive" };
   if (dateFrom || dateTo) {

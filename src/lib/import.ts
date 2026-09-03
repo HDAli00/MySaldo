@@ -37,12 +37,6 @@ function fingerprintRow(accountIban: string, row: ParsedIngTransaction): string 
   return createHash("sha256").update(parts.join("|"), "utf8").digest("hex");
 }
 
-async function getOrCreateDefaultUser() {
-  const existing = await db.user.findFirst();
-  if (existing) return existing;
-  return db.user.create({ data: {} });
-}
-
 async function getOrCreateAccount(userId: string, iban: string) {
   const normalized = normalizeIban(iban);
   const existingAccounts = await db.account.findMany({ where: { userId } });
@@ -66,10 +60,16 @@ async function getOrCreateAccount(userId: string, iban: string) {
   });
 }
 
-export async function runIngImport(fileName: string, fileContent: string): Promise<ImportReport> {
+export async function runIngImport(
+  userId: string,
+  fileName: string,
+  fileContent: string
+): Promise<ImportReport> {
   const fileHash = hashFile(fileContent);
 
-  const existingImport = await db.import.findUnique({ where: { fileHash } });
+  const existingImport = await db.import.findUnique({
+    where: { userId_fileHash: { userId, fileHash } },
+  });
   if (existingImport) {
     return {
       importId: existingImport.id,
@@ -91,6 +91,7 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
   if (missingColumns.length > 0) {
     const failedImport = await db.import.create({
       data: {
+        userId,
         fileName,
         fileHash,
         status: "FAILED",
@@ -115,13 +116,11 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
     };
   }
 
-  const user = await getOrCreateDefaultUser();
-
   const accountByIban = new Map<string, Awaited<ReturnType<typeof getOrCreateAccount>>>();
   for (const row of transactions) {
     const normalized = normalizeIban(row.accountIban);
     if (!accountByIban.has(normalized)) {
-      accountByIban.set(normalized, await getOrCreateAccount(user.id, normalized));
+      accountByIban.set(normalized, await getOrCreateAccount(userId, normalized));
     }
   }
 
@@ -131,6 +130,7 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
 
   const importRecord = await db.import.create({
     data: {
+      userId,
       fileName,
       fileHash,
       status: "PROCESSING",
@@ -205,7 +205,7 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
     }
   }
 
-  await categorizeUncategorizedTransactions(user.id);
+  await categorizeUncategorizedTransactions(userId);
 
   return {
     importId: importRecord.id,
