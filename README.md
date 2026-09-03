@@ -67,6 +67,26 @@ Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
 5. Go to **Imports** and upload an ING Netherlands CSV export to see it in
    **Accounts** and **Transactions**.
 
+## Troubleshooting
+
+**`PrismaClientInitializationError` / `FATAL: tenant or user "postgres.<ref>" not found`**
+
+This comes from Supabase's connection pooler (Supavisor), not from Prisma or
+this app's code — it means the pooler has no project matching the ref in
+your `DATABASE_URL`. Check, in order:
+
+1. **Project paused.** Free-tier Supabase projects auto-pause after a period
+   of inactivity. Open the [Supabase dashboard](https://supabase.com/dashboard)
+   and resume the project if it shows as paused.
+2. **Wrong or stale project ref/password.** Re-copy both `DATABASE_URL` and
+   `DIRECT_URL` from Project Settings > Database > Connection string — the
+   username must be `postgres.<project-ref>` and must match the project
+   you're actually running against (easy to get stale after resetting the DB
+   password or switching projects).
+3. **`.env` not loaded.** Confirm `.env` exists at the repo root (copied from
+   `.env.example`) and that both variables are set — `next dev` only reads
+   `.env`/`.env.local`, not `.env.example`.
+
 ## Tech stack
 
 - Next.js (App Router) + TypeScript + Tailwind CSS
