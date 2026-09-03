@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { maskIban } from "@/lib/iban";
 import { assignChartColors, categoryColorVar } from "@/lib/categories";
 import { dateKey, monthBounds, toMonthString } from "@/lib/date-range";
+import { getSession } from "@/lib/auth/session";
 
 const MAX_CATEGORY_SLOTS = 7; // + one "Other" bucket, per the dataviz 8-series cap
 
@@ -11,18 +12,9 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const accountId = params.get("accountId");
 
-  const user = await db.user.findFirst();
-  if (!user) {
-    return NextResponse.json({
-      month: params.get("month") ?? toMonthString(new Date()),
-      hasData: false,
-      accountLabel: "All accounts",
-      totals: { income: 0, expenses: 0, net: 0, savingsRate: null },
-      categoryBreakdown: [],
-      dailyCashFlow: [],
-      recentTransactions: [],
-    });
-  }
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = session.user;
 
   let month = params.get("month");
   if (!month) {
@@ -46,7 +38,7 @@ export async function GET(request: NextRequest) {
       include: { category: true, account: true },
       orderBy: { transactionDate: "desc" },
     }),
-    accountId ? db.account.findUnique({ where: { id: accountId } }) : null,
+    accountId ? db.account.findFirst({ where: { id: accountId, userId: user.id } }) : null,
   ]);
 
   let income = 0;

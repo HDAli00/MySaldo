@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { maskIban } from "@/lib/iban";
+import { getSession } from "@/lib/auth/session";
 
 export async function GET() {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const accounts = await db.account.findMany({
+    where: { userId: session.user.id },
     orderBy: { createdAt: "asc" },
   });
 

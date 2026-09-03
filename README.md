@@ -8,6 +8,8 @@ phases) budgeting and forecasting.
 
 Implemented so far:
 
+- Email/password authentication with database-backed sessions. All accounts,
+  transactions, and imports are scoped to the signed-in user.
 - App shell with the full primary navigation (Overview, Accounts,
   Transactions, Budgets, Forecast, Rules, Imports, Settings) and an
   account-scope selector in the header.
@@ -64,8 +66,9 @@ Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
 
    Open [http://localhost:3000](http://localhost:3000).
 
-5. Go to **Imports** and upload an ING Netherlands CSV export to see it in
-   **Accounts** and **Transactions**.
+5. Visit [http://localhost:3000/signup](http://localhost:3000/signup) to
+   create an account, then go to **Imports** and upload an ING Netherlands
+   CSV export to see it in **Accounts** and **Transactions**.
 
 ## Tech stack
 

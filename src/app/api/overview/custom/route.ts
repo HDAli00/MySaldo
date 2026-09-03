@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, TransactionDirection } from "@prisma/client";
 import { db } from "@/lib/db";
+import { getSession } from "@/lib/auth/session";
 import { assignChartColors, categoryColorVar } from "@/lib/categories";
 import { dateKey, monthBounds, toMonthString } from "@/lib/date-range";
 import {
@@ -62,8 +63,9 @@ export async function GET(request: NextRequest) {
       data: [] as CustomChartPoint[],
     });
 
-  const user = await db.user.findFirst();
-  if (!user) return empty();
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = session.user;
 
   let month = params.get("month");
   if (!month) {
