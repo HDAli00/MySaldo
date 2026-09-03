@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import type { ScopedDb } from "@/lib/user-scope";
 import { monthBounds, nextMonthString } from "@/lib/date-range";
 import { FIXED_EXPENSE_CATEGORIES } from "@/lib/categories";
 
@@ -33,6 +33,7 @@ function projectDate(sourceDate: Date, targetYear: number, targetMonthIndex: num
  * than ~15%, and it was still active in `month` or the month before it.
  */
 export async function detectUpcomingFixedExpenses(
+  tx: ScopedDb,
   userId: string,
   month: string,
   accountId?: string | null
@@ -42,9 +43,9 @@ export async function detectUpcomingFixedExpenses(
   const lookbackStart = new Date(referenceEnd);
   lookbackStart.setUTCMonth(lookbackStart.getUTCMonth() - 4);
 
-  const transactions = await db.transaction.findMany({
+  const transactions = await tx.transaction.findMany({
     where: {
-      account: { userId },
+      userId,
       ...(accountId ? { accountId } : {}),
       direction: "EXPENSE",
       isTransfer: false,

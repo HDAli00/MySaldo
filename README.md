@@ -28,7 +28,7 @@ are built.
 
 ## Getting started
 
-Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
+Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres + Auth).
 
 1. Install dependencies:
 
@@ -36,8 +36,8 @@ Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
    npm install
    ```
 
-2. Copy the environment template and fill in your database URLs and
-   encryption key:
+2. Copy the environment template and fill in your database URLs, Supabase
+   Auth keys, and encryption key:
 
    ```bash
    cp .env.example .env
@@ -46,31 +46,85 @@ Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
    # pooled "transaction mode" URL and the direct "session mode" URL — see
    # comments in .env.example).
    #
+   # NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY: from
+   # Project Settings > API.
+   #
    # Generate an encryption key:
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    ```
 
-3. Apply migrations to your Supabase database:
+3. Apply migrations to your Supabase database (run with the privileged
+   `postgres` role, i.e. your current DIRECT_URL/DATABASE_URL — this also
+   creates the restricted `saldo_app` role used in the next step):
 
    ```bash
    npx prisma migrate deploy
    ```
 
-4. Start the dev server:
+4. Set a password for the restricted app role and switch `DATABASE_URL` to
+   use it. This step is what makes Row Level Security actually enforced for
+   the app's own queries — see [Auth & Row Level
+   Security](#auth--row-level-security) below for why it matters:
+
+   ```sql
+   -- Run in the Supabase SQL editor
+   ALTER ROLE saldo_app WITH PASSWORD '<a strong random password>';
+   ```
+
+   ```bash
+   # .env — swap the DATABASE_URL role from postgres.<ref> to saldo_app.<ref>
+   DATABASE_URL="postgresql://saldo_app.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true"
+   ```
+
+   Leave `DIRECT_URL` on the `postgres` role — future `prisma migrate`
+   runs need privileges `saldo_app` intentionally doesn't have (creating
+   tables, roles, policies).
+
+5. In Supabase Auth settings, enable the **Email** provider (magic link /
+   OTP). No further configuration is required for local development.
+
+6. Start the dev server:
 
    ```bash
    npm run dev
    ```
 
-   Open [http://localhost:3000](http://localhost:3000).
+   Open [http://localhost:3000](http://localhost:3000) and sign in with your
+   email — Supabase will send you a magic link.
 
-5. Go to **Imports** and upload an ING Netherlands CSV export to see it in
+7. Go to **Imports** and upload an ING Netherlands CSV export to see it in
    **Accounts** and **Transactions**.
+
+## Auth & Row Level Security
+
+Every table that holds user data (`accounts`, `transactions`, `imports`, and
+`users` itself) has Row Level Security enabled and `FORCE`d, with policies
+that only allow a row through when it matches a Postgres session variable
+(`app.user_id`) the app sets at the start of each request's database
+transaction — see `src/lib/user-scope.ts` and the `add_auth_and_rls`
+migration. There's no "all rows" fallback: if the session variable is unset,
+the policy evaluates to false and the query sees nothing.
+
+This is enforced by Postgres itself, not just by `where userId: ...` clauses
+in the app code — but only for connections that don't bypass RLS. Supabase's
+default `postgres` role does bypass it, which is why step 4 above matters:
+without switching the app's runtime connection to the restricted `saldo_app`
+role, the policies exist but are silently ignored by every query Prisma
+makes.
+
+Sign-in is a Supabase Auth magic link (passwordless). The first person to
+sign in claims any pre-existing, not-yet-owned data (from before this app
+had accounts at all); every signup after that gets a fresh, empty account.
+See `src/lib/current-user.ts` for the claim logic and its RLS policy.
+
+`categories` is shared reference data (no owner column) and is intentionally
+readable/writable by any authenticated app connection — it isn't per-user
+data.
 
 ## Tech stack
 
 - Next.js (App Router) + TypeScript + Tailwind CSS
-- Prisma ORM + Supabase (PostgreSQL)
+- Prisma ORM + Supabase (PostgreSQL, Auth, Row Level Security)
 - Papa Parse for CSV parsing
 
 ## Scripts

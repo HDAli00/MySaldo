@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import type { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import type { ScopedDb } from "@/lib/user-scope";
 import { decryptIban, encryptIban, ibanLastFour, normalizeIban } from "@/lib/iban";
 import { parseIngCsv, type ParsedIngTransaction } from "@/lib/csv/ing-parser";
 import { categorizeUncategorizedTransactions } from "@/lib/categorize";
@@ -37,15 +37,9 @@ function fingerprintRow(accountIban: string, row: ParsedIngTransaction): string 
   return createHash("sha256").update(parts.join("|"), "utf8").digest("hex");
 }
 
-async function getOrCreateDefaultUser() {
-  const existing = await db.user.findFirst();
-  if (existing) return existing;
-  return db.user.create({ data: {} });
-}
-
-async function getOrCreateAccount(userId: string, iban: string) {
+async function getOrCreateAccount(tx: ScopedDb, userId: string, iban: string) {
   const normalized = normalizeIban(iban);
-  const existingAccounts = await db.account.findMany({ where: { userId } });
+  const existingAccounts = await tx.account.findMany({ where: { userId } });
 
   for (const account of existingAccounts) {
     // iban_encrypted values are non-deterministic (random IV), so we compare by decrypting.
@@ -55,7 +49,7 @@ async function getOrCreateAccount(userId: string, iban: string) {
   }
 
   const lastFour = ibanLastFour(normalized);
-  return db.account.create({
+  return tx.account.create({
     data: {
       userId,
       name: `ING Account ····${lastFour}`,
@@ -66,10 +60,17 @@ async function getOrCreateAccount(userId: string, iban: string) {
   });
 }
 
-export async function runIngImport(fileName: string, fileContent: string): Promise<ImportReport> {
+export async function runIngImport(
+  tx: ScopedDb,
+  userId: string,
+  fileName: string,
+  fileContent: string
+): Promise<ImportReport> {
   const fileHash = hashFile(fileContent);
 
-  const existingImport = await db.import.findUnique({ where: { fileHash } });
+  const existingImport = await tx.import.findUnique({
+    where: { userId_fileHash: { userId, fileHash } },
+  });
   if (existingImport) {
     return {
       importId: existingImport.id,
@@ -89,8 +90,9 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
   const { transactions, errors, missingColumns, totalRows } = parseIngCsv(fileContent);
 
   if (missingColumns.length > 0) {
-    const failedImport = await db.import.create({
+    const failedImport = await tx.import.create({
       data: {
+        userId,
         fileName,
         fileHash,
         status: "FAILED",
@@ -115,13 +117,11 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
     };
   }
 
-  const user = await getOrCreateDefaultUser();
-
   const accountByIban = new Map<string, Awaited<ReturnType<typeof getOrCreateAccount>>>();
   for (const row of transactions) {
     const normalized = normalizeIban(row.accountIban);
     if (!accountByIban.has(normalized)) {
-      accountByIban.set(normalized, await getOrCreateAccount(user.id, normalized));
+      accountByIban.set(normalized, await getOrCreateAccount(tx, userId, normalized));
     }
   }
 
@@ -129,8 +129,9 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
   const dateFrom = dates.length ? new Date(Math.min(...dates)) : null;
   const dateTo = dates.length ? new Date(Math.max(...dates)) : null;
 
-  const importRecord = await db.import.create({
+  const importRecord = await tx.import.create({
     data: {
+      userId,
       fileName,
       fileHash,
       status: "PROCESSING",
@@ -151,7 +152,7 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
     const account = accountByIban.get(normalizeIban(row.accountIban))!;
     const fingerprint = fingerprintRow(row.accountIban, row);
 
-    const existing = await db.transaction.findUnique({
+    const existing = await tx.transaction.findUnique({
       where: { duplicateFingerprint: fingerprint },
     });
     if (existing) {
@@ -159,8 +160,9 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
       continue;
     }
 
-    await db.transaction.create({
+    await tx.transaction.create({
       data: {
+        userId,
         accountId: account.id,
         transactionDate: row.transactionDate,
         description: row.description,
@@ -179,7 +181,7 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
     rowsImported += 1;
   }
 
-  await db.import.update({
+  await tx.import.update({
     where: { id: importRecord.id },
     data: { status: "COMPLETED", rowsImported, duplicatesSkipped },
   });
@@ -194,7 +196,7 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
     if (latestRow.balanceAfterTransaction !== null) {
       const currentLatest = account.latestTransactionDate;
       if (!currentLatest || latestRow.transactionDate >= currentLatest) {
-        await db.account.update({
+        await tx.account.update({
           where: { id: account.id },
           data: {
             latestBalance: latestRow.balanceAfterTransaction,
@@ -205,7 +207,7 @@ export async function runIngImport(fileName: string, fileContent: string): Promi
     }
   }
 
-  await categorizeUncategorizedTransactions(user.id);
+  await categorizeUncategorizedTransactions(tx, userId);
 
   return {
     importId: importRecord.id,

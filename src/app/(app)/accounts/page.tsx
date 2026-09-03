@@ -1,29 +1,36 @@
 import Link from "next/link";
-import { db } from "@/lib/db";
+import { redirect } from "next/navigation";
 import { maskIban } from "@/lib/iban";
+import { getCurrentAppUser } from "@/lib/require-user";
+import { withUserScope } from "@/lib/user-scope";
 
 export const dynamic = "force-dynamic";
 
-async function getAccounts() {
-  const accounts = await db.account.findMany({ orderBy: { createdAt: "asc" } });
-  return Promise.all(
-    accounts.map(async (account) => {
-      const transactionCount = await db.transaction.count({ where: { accountId: account.id } });
-      return {
-        id: account.id,
-        name: account.name,
-        maskedIban: maskIban(account.ibanLastFour, account.bankName),
-        bankName: account.bankName,
-        latestBalance: account.latestBalance,
-        latestTransactionDate: account.latestTransactionDate,
-        transactionCount,
-      };
-    })
-  );
+async function getAccounts(userId: string) {
+  return withUserScope(userId, async (tx) => {
+    const accounts = await tx.account.findMany({ orderBy: { createdAt: "asc" } });
+    return Promise.all(
+      accounts.map(async (account) => {
+        const transactionCount = await tx.transaction.count({ where: { accountId: account.id } });
+        return {
+          id: account.id,
+          name: account.name,
+          maskedIban: maskIban(account.ibanLastFour, account.bankName),
+          bankName: account.bankName,
+          latestBalance: account.latestBalance,
+          latestTransactionDate: account.latestTransactionDate,
+          transactionCount,
+        };
+      })
+    );
+  });
 }
 
 export default async function AccountsPage() {
-  const accounts = await getAccounts();
+  const user = await getCurrentAppUser();
+  if (!user) redirect("/login");
+
+  const accounts = await getAccounts(user.id);
 
   return (
     <div className="mx-auto max-w-4xl">

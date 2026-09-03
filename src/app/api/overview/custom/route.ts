@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, TransactionDirection } from "@prisma/client";
-import { db } from "@/lib/db";
 import { assignChartColors, categoryColorVar } from "@/lib/categories";
 import { dateKey, monthBounds, toMonthString } from "@/lib/date-range";
+import { getCurrentAppUser } from "@/lib/require-user";
+import { withUserScope } from "@/lib/user-scope";
 import {
   DIMENSIONS,
   DIMENSION_LABELS,
@@ -44,6 +45,9 @@ function measureLabel(measure: Measure): string {
 }
 
 export async function GET(request: NextRequest) {
+  const user = await getCurrentAppUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const params = request.nextUrl.searchParams;
   const accountId = params.get("accountId");
   const dimension = parseEnum(params.get("dimension"), DIMENSIONS, "category");
@@ -62,101 +66,100 @@ export async function GET(request: NextRequest) {
       data: [] as CustomChartPoint[],
     });
 
-  const user = await db.user.findFirst();
-  if (!user) return empty();
-
-  let month = params.get("month");
-  if (!month) {
-    const latest = await db.transaction.findFirst({
-      where: { account: { userId: user.id }, ...(accountId ? { accountId } : {}) },
-      orderBy: { transactionDate: "desc" },
-    });
-    month = toMonthString(latest?.transactionDate ?? new Date());
-  }
-  const { start, end } = monthBounds(month);
-
-  const directionWhere: Prisma.TransactionWhereInput =
-    direction === "all" ? {} : { direction: direction === "income" ? TransactionDirection.INCOME : TransactionDirection.EXPENSE };
-
-  const transactions = await db.transaction.findMany({
-    where: {
-      account: { userId: user.id },
-      transactionDate: { gte: start, lt: end },
-      isTransfer: false,
-      ...(accountId ? { accountId } : {}),
-      ...directionWhere,
-    },
-    include: { category: true, account: true },
-  });
-
-  if (transactions.length === 0) return empty();
-
-  const groups = new Map<string, { sum: number; count: number; max: number }>();
-  for (const tx of transactions) {
-    const key = groupKey(dimension, tx);
-    const amount = Number(tx.amount);
-    const entry = groups.get(key) ?? { sum: 0, count: 0, max: 0 };
-    entry.sum += amount;
-    entry.count += 1;
-    entry.max = Math.max(entry.max, amount);
-    groups.set(key, entry);
-  }
-
-  function measureValue(entry: { sum: number; count: number; max: number }): number {
-    switch (measure) {
-      case "total":
-        return entry.sum;
-      case "average":
-        return entry.sum / entry.count;
-      case "count":
-        return entry.count;
-      case "largest":
-        return entry.max;
+  return withUserScope(user.id, async (tx) => {
+    let month = params.get("month");
+    if (!month) {
+      const latest = await tx.transaction.findFirst({
+        where: { userId: user.id, ...(accountId ? { accountId } : {}) },
+        orderBy: { transactionDate: "desc" },
+      });
+      month = toMonthString(latest?.transactionDate ?? new Date());
     }
-  }
+    const { start, end } = monthBounds(month);
 
-  let data: CustomChartPoint[];
+    const directionWhere: Prisma.TransactionWhereInput =
+      direction === "all" ? {} : { direction: direction === "income" ? TransactionDirection.INCOME : TransactionDirection.EXPENSE };
 
-  if (isTemporal) {
-    data = Array.from(groups.entries())
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([key, entry]) => ({
-        key,
-        value: Math.round(measureValue(entry) * 100) / 100,
-        color: categoryColorVar("blue"),
-      }));
-  } else {
-    const ranked = Array.from(groups.entries())
-      .map(([key, entry]) => [key, measureValue(entry), entry] as const)
-      .sort((a, b) => b[1] - a[1]);
+    const transactions = await tx.transaction.findMany({
+      where: {
+        userId: user.id,
+        transactionDate: { gte: start, lt: end },
+        isTransfer: false,
+        ...(accountId ? { accountId } : {}),
+        ...directionWhere,
+      },
+      include: { category: true, account: true },
+    });
 
-    const top = ranked.slice(0, MAX_CATEGORICAL_SLOTS);
-    const rest = ranked.slice(MAX_CATEGORICAL_SLOTS);
+    if (transactions.length === 0) return empty();
 
-    const colors = assignChartColors(top.map(([key]) => key));
-    data = top.map(([key, value]) => ({
-      key,
-      value: Math.round(value * 100) / 100,
-      color: colors.get(key) ?? categoryColorVar("gray"),
-    }));
+    const groups = new Map<string, { sum: number; count: number; max: number }>();
+    for (const t of transactions) {
+      const key = groupKey(dimension, t);
+      const amount = Number(t.amount);
+      const entry = groups.get(key) ?? { sum: 0, count: 0, max: 0 };
+      entry.sum += amount;
+      entry.count += 1;
+      entry.max = Math.max(entry.max, amount);
+      groups.set(key, entry);
+    }
 
-    // Non-additive measures (average, largest) can't be meaningfully summarized
-    // into a single "Other" bucket, so we simply cap them to the top 7.
-    if (rest.length > 0 && (measure === "total" || measure === "count")) {
-      const otherValue = rest.reduce((sum, [, value]) => sum + value, 0);
-      if (otherValue > 0) {
-        data.push({ key: "Other", value: Math.round(otherValue * 100) / 100, color: categoryColorVar("gray") });
+    function measureValue(entry: { sum: number; count: number; max: number }): number {
+      switch (measure) {
+        case "total":
+          return entry.sum;
+        case "average":
+          return entry.sum / entry.count;
+        case "count":
+          return entry.count;
+        case "largest":
+          return entry.max;
       }
     }
-  }
 
-  return NextResponse.json({
-    dimension,
-    measure,
-    direction,
-    isTemporal,
-    xLabel: DIMENSION_LABELS[dimension],
-    yLabel: measureLabel(measure),
-    data,
+    let data: CustomChartPoint[];
+
+    if (isTemporal) {
+      data = Array.from(groups.entries())
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([key, entry]) => ({
+          key,
+          value: Math.round(measureValue(entry) * 100) / 100,
+          color: categoryColorVar("blue"),
+        }));
+    } else {
+      const ranked = Array.from(groups.entries())
+        .map(([key, entry]) => [key, measureValue(entry), entry] as const)
+        .sort((a, b) => b[1] - a[1]);
+
+      const top = ranked.slice(0, MAX_CATEGORICAL_SLOTS);
+      const rest = ranked.slice(MAX_CATEGORICAL_SLOTS);
+
+      const colors = assignChartColors(top.map(([key]) => key));
+      data = top.map(([key, value]) => ({
+        key,
+        value: Math.round(value * 100) / 100,
+        color: colors.get(key) ?? categoryColorVar("gray"),
+      }));
+
+      // Non-additive measures (average, largest) can't be meaningfully summarized
+      // into a single "Other" bucket, so we simply cap them to the top 7.
+      if (rest.length > 0 && (measure === "total" || measure === "count")) {
+        const otherValue = rest.reduce((sum, [, value]) => sum + value, 0);
+        if (otherValue > 0) {
+          data.push({ key: "Other", value: Math.round(otherValue * 100) / 100, color: categoryColorVar("gray") });
+        }
+      }
+    }
+
+    return NextResponse.json({
+      dimension,
+      measure,
+      direction,
+      isTemporal,
+      xLabel: DIMENSION_LABELS[dimension],
+      yLabel: measureLabel(measure),
+      data,
+    });
   });
 }

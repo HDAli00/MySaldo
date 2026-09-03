@@ -1,26 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
 import { detectUpcomingFixedExpenses } from "@/lib/recurring";
-import { nextMonthString, toMonthString } from "@/lib/date-range";
+import { toMonthString } from "@/lib/date-range";
+import { getCurrentAppUser } from "@/lib/require-user";
+import { withUserScope } from "@/lib/user-scope";
 
 export async function GET(request: NextRequest) {
+  const user = await getCurrentAppUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const params = request.nextUrl.searchParams;
   const accountId = params.get("accountId");
   const month = params.get("month");
-
-  const user = await db.user.findFirst();
-  if (!user) {
-    return NextResponse.json({
-      targetMonth: month ? nextMonthString(month) : toMonthString(new Date()),
-      items: [],
-      totalExpected: 0,
-    });
-  }
-
   const resolvedMonth = month ?? toMonthString(new Date());
-  const { targetMonth, items } = await detectUpcomingFixedExpenses(user.id, resolvedMonth, accountId);
 
-  const totalExpected = Math.round(items.reduce((sum, item) => sum + item.expectedAmount, 0) * 100) / 100;
-
-  return NextResponse.json({ targetMonth, items, totalExpected });
+  return withUserScope(user.id, async (tx) => {
+    const { targetMonth, items } = await detectUpcomingFixedExpenses(tx, user.id, resolvedMonth, accountId);
+    const totalExpected = Math.round(items.reduce((sum, item) => sum + item.expectedAmount, 0) * 100) / 100;
+    return NextResponse.json({ targetMonth, items, totalExpected });
+  });
 }
