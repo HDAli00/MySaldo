@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import type { ScopedDb } from "@/lib/user-scope";
 import { decryptIban, normalizeIban } from "@/lib/iban";
 import { DEFAULT_CATEGORIES, TRANSFERS, INCOME, UNCATEGORIZED } from "@/lib/categories";
 
@@ -95,23 +95,19 @@ function matchKeywordCategory(description: string): string | null {
   return null;
 }
 
-let categoriesSeeded = false;
-
 /** Idempotently ensures the default category set exists. */
-export async function ensureDefaultCategories(): Promise<Map<string, string>> {
-  if (!categoriesSeeded) {
-    await db.$transaction(
-      DEFAULT_CATEGORIES.map((cat) =>
-        db.category.upsert({
-          where: { name: cat.name },
-          update: {},
-          create: { name: cat.name, type: cat.type, color: cat.slot, isSystemCategory: true },
-        })
-      )
-    );
-    categoriesSeeded = true;
+export async function ensureDefaultCategories(tx: ScopedDb): Promise<Map<string, string>> {
+  // tx is already inside a transaction, so these upserts run sequentially
+  // against it rather than via db.$transaction([...]) (nested transactions
+  // aren't supported).
+  for (const cat of DEFAULT_CATEGORIES) {
+    await tx.category.upsert({
+      where: { name: cat.name },
+      update: {},
+      create: { name: cat.name, type: cat.type, color: cat.slot, isSystemCategory: true },
+    });
   }
-  const categories = await db.category.findMany();
+  const categories = await tx.category.findMany();
   return new Map(categories.map((c) => [c.name, c.id]));
 }
 
@@ -120,31 +116,31 @@ export async function ensureDefaultCategories(): Promise<Map<string, string>> {
  * accounts that hasn't been categorized yet. Transfers are detected by
  * matching the counterparty IBAN against the user's other own accounts.
  */
-export async function categorizeUncategorizedTransactions(userId: string): Promise<void> {
-  const categoryIdByName = await ensureDefaultCategories();
+export async function categorizeUncategorizedTransactions(tx: ScopedDb, userId: string): Promise<void> {
+  const categoryIdByName = await ensureDefaultCategories(tx);
 
-  const ownAccounts = await db.account.findMany({ where: { userId } });
+  const ownAccounts = await tx.account.findMany({ where: { userId } });
   const ownIbans = new Set(ownAccounts.map((a) => normalizeIban(decryptIban(a.ibanEncrypted))));
 
-  const uncategorized = await db.transaction.findMany({
-    where: { categoryId: null, account: { userId } },
+  const uncategorized = await tx.transaction.findMany({
+    where: { categoryId: null, userId },
   });
 
-  for (const tx of uncategorized) {
-    const counterpartyIban = tx.counterpartyIbanEncrypted ? decryptIban(tx.counterpartyIbanEncrypted) : null;
+  for (const txn of uncategorized) {
+    const counterpartyIban = txn.counterpartyIbanEncrypted ? decryptIban(txn.counterpartyIbanEncrypted) : null;
     const isTransfer = counterpartyIban ? ownIbans.has(normalizeIban(counterpartyIban)) : false;
 
     let categoryName: string;
     if (isTransfer) {
       categoryName = TRANSFERS;
-    } else if (tx.direction === "INCOME") {
+    } else if (txn.direction === "INCOME") {
       categoryName = INCOME;
     } else {
-      categoryName = matchKeywordCategory(tx.description) ?? UNCATEGORIZED;
+      categoryName = matchKeywordCategory(txn.description) ?? UNCATEGORIZED;
     }
 
-    await db.transaction.update({
-      where: { id: tx.id },
+    await tx.transaction.update({
+      where: { id: txn.id },
       data: {
         categoryId: categoryIdByName.get(categoryName) ?? null,
         isTransfer,
