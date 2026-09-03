@@ -28,7 +28,7 @@ are built.
 
 ## Getting started
 
-Requires Node.js 20+ and a PostgreSQL database.
+Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
 
 1. Install dependencies:
 
@@ -36,19 +36,24 @@ Requires Node.js 20+ and a PostgreSQL database.
    npm install
    ```
 
-2. Copy the environment template and fill in your database URL and
+2. Copy the environment template and fill in your database URLs and
    encryption key:
 
    ```bash
    cp .env.example .env
+   # DATABASE_URL / DIRECT_URL: from your Supabase project's
+   # Project Settings > Database > Connection string (Prisma needs both the
+   # pooled "transaction mode" URL and the direct "session mode" URL — see
+   # comments in .env.example).
+   #
    # Generate an encryption key:
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    ```
 
-3. Run the initial migration:
+3. Apply migrations to your Supabase database:
 
    ```bash
-   npx prisma migrate dev
+   npx prisma migrate deploy
    ```
 
 4. Start the dev server:
@@ -65,7 +70,7 @@ Requires Node.js 20+ and a PostgreSQL database.
 ## Tech stack
 
 - Next.js (App Router) + TypeScript + Tailwind CSS
-- Prisma ORM + PostgreSQL
+- Prisma ORM + Supabase (PostgreSQL)
 - Papa Parse for CSV parsing
 
 ## Scripts
@@ -73,5 +78,6 @@ Requires Node.js 20+ and a PostgreSQL database.
 - `npm run dev` — start the dev server
 - `npm run build` — production build
 - `npm run lint` — ESLint
-- `npx prisma migrate dev` — apply schema migrations locally
+- `npx prisma migrate dev` — create and apply a new schema migration locally
+- `npx prisma migrate deploy` — apply pending migrations to Supabase
 - `npx prisma studio` — browse the database
