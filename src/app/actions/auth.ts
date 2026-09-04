@@ -1,9 +1,11 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { db } from "@/lib/db";
+import { supabase } from "@/lib/db";
+import { newId } from "@/lib/id";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { createSession, deleteSession } from "@/lib/auth/session";
+import type { UserRow } from "@/lib/db/types";
 
 export type AuthFormState = { error: string } | undefined;
 
@@ -20,14 +22,23 @@ export async function signup(_state: AuthFormState, formData: FormData): Promise
     return { error: "Password must be at least 8 characters long." };
   }
 
-  const existing = await db.user.findUnique({ where: { email } });
+  const { data: existing } = await supabase
+    .from("users")
+    .select("id")
+    .eq("email", email)
+    .maybeSingle();
   if (existing) {
     return { error: "An account with this email already exists." };
   }
 
-  const user = await db.user.create({
-    data: { email, passwordHash: hashPassword(password) },
-  });
+  const { data: user, error } = await supabase
+    .from("users")
+    .insert({ id: newId(), email, password_hash: hashPassword(password) })
+    .select("id")
+    .single<Pick<UserRow, "id">>();
+  if (error || !user) {
+    return { error: "An account with this email already exists." };
+  }
 
   await createSession(user.id);
   redirect("/");
@@ -37,8 +48,12 @@ export async function login(_state: AuthFormState, formData: FormData): Promise<
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
 
-  const user = await db.user.findUnique({ where: { email } });
-  if (!user || !verifyPassword(password, user.passwordHash)) {
+  const { data: user } = await supabase
+    .from("users")
+    .select("id, password_hash")
+    .eq("email", email)
+    .maybeSingle<Pick<UserRow, "id" | "password_hash">>();
+  if (!user || !verifyPassword(password, user.password_hash)) {
     return { error: "Invalid email or password." };
   }
 

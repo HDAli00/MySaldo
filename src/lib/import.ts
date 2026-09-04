@@ -1,6 +1,8 @@
 import { createHash } from "crypto";
-import type { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import { supabase } from "@/lib/db";
+import { newId } from "@/lib/id";
+import { mapAccount, mapImport } from "@/lib/db/map";
+import type { Account, AccountRow, ImportRow } from "@/lib/db/types";
 import { decryptIban, encryptIban, ibanLastFour, normalizeIban } from "@/lib/iban";
 import { parseIngCsv, type ParsedIngTransaction } from "@/lib/csv/ing-parser";
 import { categorizeUncategorizedTransactions } from "@/lib/categorize";
@@ -37,27 +39,37 @@ function fingerprintRow(accountIban: string, row: ParsedIngTransaction): string 
   return createHash("sha256").update(parts.join("|"), "utf8").digest("hex");
 }
 
-async function getOrCreateAccount(userId: string, iban: string) {
+async function getOrCreateAccount(userId: string, iban: string): Promise<Account> {
   const normalized = normalizeIban(iban);
-  const existingAccounts = await db.account.findMany({ where: { userId } });
+  const { data: existingRows, error: listError } = await supabase
+    .from("accounts")
+    .select("*")
+    .eq("user_id", userId)
+    .returns<AccountRow[]>();
+  if (listError) throw listError;
 
-  for (const account of existingAccounts) {
+  for (const row of existingRows ?? []) {
     // iban_encrypted values are non-deterministic (random IV), so we compare by decrypting.
-    if (normalizeIban(decryptIban(account.ibanEncrypted)) === normalized) {
-      return account;
+    if (normalizeIban(decryptIban(row.iban_encrypted)) === normalized) {
+      return mapAccount(row);
     }
   }
 
   const lastFour = ibanLastFour(normalized);
-  return db.account.create({
-    data: {
-      userId,
+  const { data, error } = await supabase
+    .from("accounts")
+    .insert({
+      id: newId(),
+      user_id: userId,
       name: `ING Account ····${lastFour}`,
-      ibanEncrypted: encryptIban(normalized),
-      ibanLastFour: lastFour,
-      bankName: "ING",
-    },
-  });
+      iban_encrypted: encryptIban(normalized),
+      iban_last_four: lastFour,
+      bank_name: "ING",
+    })
+    .select("*")
+    .single<AccountRow>();
+  if (error || !data) throw error ?? new Error("Failed to create account.");
+  return mapAccount(data);
 }
 
 export async function runIngImport(
@@ -67,10 +79,14 @@ export async function runIngImport(
 ): Promise<ImportReport> {
   const fileHash = hashFile(fileContent);
 
-  const existingImport = await db.import.findUnique({
-    where: { userId_fileHash: { userId, fileHash } },
-  });
-  if (existingImport) {
+  const { data: existingImportRow } = await supabase
+    .from("imports")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("file_hash", fileHash)
+    .maybeSingle<ImportRow>();
+  if (existingImportRow) {
+    const existingImport = mapImport(existingImportRow);
     return {
       importId: existingImport.id,
       fileName: existingImport.fileName,
@@ -89,20 +105,25 @@ export async function runIngImport(
   const { transactions, errors, missingColumns, totalRows } = parseIngCsv(fileContent);
 
   if (missingColumns.length > 0) {
-    const failedImport = await db.import.create({
-      data: {
-        userId,
-        fileName,
-        fileHash,
+    const { data: failedImportRow, error } = await supabase
+      .from("imports")
+      .insert({
+        id: newId(),
+        user_id: userId,
+        file_name: fileName,
+        file_hash: fileHash,
         status: "FAILED",
-        rowsSeen: 0,
-        rowsImported: 0,
-        duplicatesSkipped: 0,
+        rows_seen: 0,
+        rows_imported: 0,
+        duplicates_skipped: 0,
         errors: [{ message: `Missing required columns: ${missingColumns.join(", ")}` }],
-      },
-    });
+      })
+      .select("*")
+      .single<ImportRow>();
+    if (error || !failedImportRow) throw error ?? new Error("Failed to record failed import.");
+
     return {
-      importId: failedImport.id,
+      importId: failedImportRow.id,
       fileName,
       alreadyImported: false,
       rowsSeen: 0,
@@ -116,7 +137,7 @@ export async function runIngImport(
     };
   }
 
-  const accountByIban = new Map<string, Awaited<ReturnType<typeof getOrCreateAccount>>>();
+  const accountByIban = new Map<string, Account>();
   for (const row of transactions) {
     const normalized = normalizeIban(row.accountIban);
     if (!accountByIban.has(normalized)) {
@@ -128,21 +149,26 @@ export async function runIngImport(
   const dateFrom = dates.length ? new Date(Math.min(...dates)) : null;
   const dateTo = dates.length ? new Date(Math.max(...dates)) : null;
 
-  const importRecord = await db.import.create({
-    data: {
-      userId,
-      fileName,
-      fileHash,
+  const importId = newId();
+  const { data: importRow, error: importError } = await supabase
+    .from("imports")
+    .insert({
+      id: importId,
+      user_id: userId,
+      file_name: fileName,
+      file_hash: fileHash,
       status: "PROCESSING",
-      accountId: transactions.length
+      account_id: transactions.length
         ? accountByIban.get(normalizeIban(transactions[0].accountIban))!.id
         : null,
-      rowsSeen: totalRows,
-      dateFrom,
-      dateTo,
-      errors: errors.length ? (errors as unknown as Prisma.InputJsonValue) : undefined,
-    },
-  });
+      rows_seen: totalRows,
+      date_from: dateFrom ? dateFrom.toISOString() : null,
+      date_to: dateTo ? dateTo.toISOString() : null,
+      errors: errors.length ? errors : null,
+    })
+    .select("*")
+    .single<ImportRow>();
+  if (importError || !importRow) throw importError ?? new Error("Failed to create import.");
 
   let rowsImported = 0;
   let duplicatesSkipped = 0;
@@ -151,38 +177,40 @@ export async function runIngImport(
     const account = accountByIban.get(normalizeIban(row.accountIban))!;
     const fingerprint = fingerprintRow(row.accountIban, row);
 
-    const existing = await db.transaction.findUnique({
-      where: { duplicateFingerprint: fingerprint },
-    });
-    if (existing) {
+    const { data: existingTx } = await supabase
+      .from("transactions")
+      .select("id")
+      .eq("duplicate_fingerprint", fingerprint)
+      .maybeSingle();
+    if (existingTx) {
       duplicatesSkipped += 1;
       continue;
     }
 
-    await db.transaction.create({
-      data: {
-        accountId: account.id,
-        transactionDate: row.transactionDate,
-        description: row.description,
-        counterpartyIbanEncrypted: row.counterpartyIban ? encryptIban(row.counterpartyIban) : null,
-        counterpartyIbanLastFour: row.counterpartyIban ? ibanLastFour(row.counterpartyIban) : null,
-        amount: row.amount,
-        direction: row.direction,
-        mutationCode: row.mutationCode || null,
-        mutationType: row.mutationType || null,
-        balanceAfterTransaction: row.balanceAfterTransaction,
-        tag: row.tag,
-        sourceImportId: importRecord.id,
-        duplicateFingerprint: fingerprint,
-      },
+    const { error: insertError } = await supabase.from("transactions").insert({
+      id: newId(),
+      account_id: account.id,
+      transaction_date: row.transactionDate.toISOString(),
+      description: row.description,
+      counterparty_iban_encrypted: row.counterpartyIban ? encryptIban(row.counterpartyIban) : null,
+      counterparty_iban_last_four: row.counterpartyIban ? ibanLastFour(row.counterpartyIban) : null,
+      amount: row.amount,
+      direction: row.direction,
+      mutation_code: row.mutationCode || null,
+      mutation_type: row.mutationType || null,
+      balance_after_transaction: row.balanceAfterTransaction,
+      tag: row.tag,
+      source_import_id: importRow.id,
+      duplicate_fingerprint: fingerprint,
     });
+    if (insertError) throw insertError;
     rowsImported += 1;
   }
 
-  await db.import.update({
-    where: { id: importRecord.id },
-    data: { status: "COMPLETED", rowsImported, duplicatesSkipped },
-  });
+  await supabase
+    .from("imports")
+    .update({ status: "COMPLETED", rows_imported: rowsImported, duplicates_skipped: duplicatesSkipped })
+    .eq("id", importRow.id);
 
   // Update each touched account's latest balance / transaction date using the
   // most recent row seen for that account in this file.
@@ -194,13 +222,13 @@ export async function runIngImport(
     if (latestRow.balanceAfterTransaction !== null) {
       const currentLatest = account.latestTransactionDate;
       if (!currentLatest || latestRow.transactionDate >= currentLatest) {
-        await db.account.update({
-          where: { id: account.id },
-          data: {
-            latestBalance: latestRow.balanceAfterTransaction,
-            latestTransactionDate: latestRow.transactionDate,
-          },
-        });
+        await supabase
+          .from("accounts")
+          .update({
+            latest_balance: latestRow.balanceAfterTransaction,
+            latest_transaction_date: latestRow.transactionDate.toISOString(),
+          })
+          .eq("id", account.id);
       }
     }
   }
@@ -208,7 +236,7 @@ export async function runIngImport(
   await categorizeUncategorizedTransactions(userId);
 
   return {
-    importId: importRecord.id,
+    importId: importRow.id,
     fileName,
     alreadyImported: false,
     rowsSeen: totalRows,

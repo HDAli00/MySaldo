@@ -38,25 +38,21 @@ Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
    npm install
    ```
 
-2. Copy the environment template and fill in your database URLs and
-   encryption key:
+2. Copy the environment template and fill in your Supabase project URL, anon
+   key, and encryption key:
 
    ```bash
    cp .env.example .env
-   # DATABASE_URL / DIRECT_URL: from your Supabase project's
-   # Project Settings > Database > Connection string (Prisma needs both the
-   # pooled "transaction mode" URL and the direct "session mode" URL — see
-   # comments in .env.example).
+   # NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY: from your
+   # Supabase project's Project Settings > API.
    #
    # Generate an encryption key:
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    ```
 
-3. Apply migrations to your Supabase database:
-
-   ```bash
-   npx prisma migrate deploy
-   ```
+3. Apply the SQL migrations in `supabase/migrations/` to your Supabase
+   database (via the SQL editor in the Supabase dashboard, or the Supabase
+   CLI's `supabase db push`).
 
 4. Start the dev server:
 
@@ -73,7 +69,8 @@ Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
 ## Tech stack
 
 - Next.js (App Router) + TypeScript + Tailwind CSS
-- Prisma ORM + Supabase (PostgreSQL)
+- Supabase (PostgreSQL), accessed directly via `@supabase/supabase-js`
+  (no ORM) — see `src/lib/db.ts`
 - Papa Parse for CSV parsing
 
 ## Scripts
@@ -81,6 +78,7 @@ Requires Node.js 20+ and a [Supabase](https://supabase.com) project (Postgres).
 - `npm run dev` — start the dev server
 - `npm run build` — production build
 - `npm run lint` — ESLint
-- `npx prisma migrate dev` — create and apply a new schema migration locally
-- `npx prisma migrate deploy` — apply pending migrations to Supabase
-- `npx prisma studio` — browse the database
+
+Database schema changes are plain SQL files under `supabase/migrations/`,
+applied via the Supabase dashboard's SQL editor or `supabase db push`
+(Supabase CLI).

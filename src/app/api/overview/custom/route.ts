@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma, TransactionDirection } from "@prisma/client";
-import { db } from "@/lib/db";
+import { supabase } from "@/lib/db";
+import { listAccountsForUser, resolveAccountScope } from "@/lib/db/accounts";
+import type { TransactionRow } from "@/lib/db/types";
 import { getSession } from "@/lib/auth/session";
 import { assignChartColors, categoryColorVar } from "@/lib/categories";
 import { dateKey, monthBounds, toMonthString } from "@/lib/date-range";
@@ -18,22 +19,28 @@ import {
 
 const MAX_CATEGORICAL_SLOTS = 7; // + one "Other" bucket for additive measures
 
+type TransactionWithCategoryRow = TransactionRow & { category: { name: string } | null };
+
 function parseEnum<T extends string>(value: string | null, allowed: readonly T[], fallback: T): T {
   return value && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-function groupKey(dimension: Dimension, tx: { description: string; transactionDate: Date; category: { name: string } | null; account: { name: string } }): string {
+function groupKey(
+  dimension: Dimension,
+  tx: TransactionWithCategoryRow,
+  accountNameById: Map<string, string>
+): string {
   switch (dimension) {
     case "category":
       return tx.category?.name ?? "Uncategorized";
     case "merchant":
       return tx.description.trim().replace(/\s+/g, " ") || "(no description)";
     case "account":
-      return tx.account.name;
+      return accountNameById.get(tx.account_id) ?? "Unknown account";
     case "day":
-      return dateKey(tx.transactionDate);
+      return dateKey(new Date(tx.transaction_date));
     case "week": {
-      const weekIndex = Math.floor((tx.transactionDate.getUTCDate() - 1) / 7) + 1;
+      const weekIndex = Math.floor((new Date(tx.transaction_date).getUTCDate() - 1) / 7) + 1;
       return `Week ${weekIndex}`;
     }
   }
@@ -67,35 +74,45 @@ export async function GET(request: NextRequest) {
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const user = session.user;
 
+  const accounts = await listAccountsForUser(user.id);
+  const accountNameById = new Map(accounts.map((a) => [a.id, a.name]));
+  const scopeIds = resolveAccountScope(accounts, accountId);
+  if (scopeIds.length === 0) return empty();
+
   let month = params.get("month");
   if (!month) {
-    const latest = await db.transaction.findFirst({
-      where: { account: { userId: user.id }, ...(accountId ? { accountId } : {}) },
-      orderBy: { transactionDate: "desc" },
-    });
-    month = toMonthString(latest?.transactionDate ?? new Date());
+    const { data: latestRow } = await supabase
+      .from("transactions")
+      .select("transaction_date")
+      .in("account_id", scopeIds)
+      .order("transaction_date", { ascending: false })
+      .limit(1)
+      .maybeSingle<{ transaction_date: string }>();
+    month = toMonthString(latestRow ? new Date(latestRow.transaction_date) : new Date());
   }
   const { start, end } = monthBounds(month);
 
-  const directionWhere: Prisma.TransactionWhereInput =
-    direction === "all" ? {} : { direction: direction === "income" ? TransactionDirection.INCOME : TransactionDirection.EXPENSE };
+  let query = supabase
+    .from("transactions")
+    .select("*, category:categories(name)")
+    .in("account_id", scopeIds)
+    .gte("transaction_date", start.toISOString())
+    .lt("transaction_date", end.toISOString())
+    .eq("is_transfer", false);
 
-  const transactions = await db.transaction.findMany({
-    where: {
-      account: { userId: user.id },
-      transactionDate: { gte: start, lt: end },
-      isTransfer: false,
-      ...(accountId ? { accountId } : {}),
-      ...directionWhere,
-    },
-    include: { category: true, account: true },
-  });
+  if (direction !== "all") {
+    query = query.eq("direction", direction === "income" ? "INCOME" : "EXPENSE");
+  }
+
+  const { data, error } = await query.returns<TransactionWithCategoryRow[]>();
+  if (error) throw error;
+  const transactions = data ?? [];
 
   if (transactions.length === 0) return empty();
 
   const groups = new Map<string, { sum: number; count: number; max: number }>();
   for (const tx of transactions) {
-    const key = groupKey(dimension, tx);
+    const key = groupKey(dimension, tx, accountNameById);
     const amount = Number(tx.amount);
     const entry = groups.get(key) ?? { sum: 0, count: 0, max: 0 };
     entry.sum += amount;
@@ -117,10 +134,10 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  let data: CustomChartPoint[];
+  let data2: CustomChartPoint[];
 
   if (isTemporal) {
-    data = Array.from(groups.entries())
+    data2 = Array.from(groups.entries())
       .sort(([a], [b]) => (a < b ? -1 : 1))
       .map(([key, entry]) => ({
         key,
@@ -136,7 +153,7 @@ export async function GET(request: NextRequest) {
     const rest = ranked.slice(MAX_CATEGORICAL_SLOTS);
 
     const colors = assignChartColors(top.map(([key]) => key));
-    data = top.map(([key, value]) => ({
+    data2 = top.map(([key, value]) => ({
       key,
       value: Math.round(value * 100) / 100,
       color: colors.get(key) ?? categoryColorVar("gray"),
@@ -147,7 +164,7 @@ export async function GET(request: NextRequest) {
     if (rest.length > 0 && (measure === "total" || measure === "count")) {
       const otherValue = rest.reduce((sum, [, value]) => sum + value, 0);
       if (otherValue > 0) {
-        data.push({ key: "Other", value: Math.round(otherValue * 100) / 100, color: categoryColorVar("gray") });
+        data2.push({ key: "Other", value: Math.round(otherValue * 100) / 100, color: categoryColorVar("gray") });
       }
     }
   }
@@ -159,6 +176,6 @@ export async function GET(request: NextRequest) {
     isTemporal,
     xLabel: DIMENSION_LABELS[dimension],
     yLabel: measureLabel(measure),
-    data,
+    data: data2,
   });
 }
