@@ -1,4 +1,7 @@
-import { db } from "@/lib/db";
+import { supabase } from "@/lib/db";
+import { newId } from "@/lib/id";
+import { mapAccount, mapCategory, mapTransaction } from "@/lib/db/map";
+import type { AccountRow, CategoryRow, TransactionRow } from "@/lib/db/types";
 import { decryptIban, normalizeIban } from "@/lib/iban";
 import { DEFAULT_CATEGORIES, TRANSFERS, INCOME, UNCATEGORIZED } from "@/lib/categories";
 
@@ -100,18 +103,24 @@ let categoriesSeeded = false;
 /** Idempotently ensures the default category set exists. */
 export async function ensureDefaultCategories(): Promise<Map<string, string>> {
   if (!categoriesSeeded) {
-    await db.$transaction(
-      DEFAULT_CATEGORIES.map((cat) =>
-        db.category.upsert({
-          where: { name: cat.name },
-          update: {},
-          create: { name: cat.name, type: cat.type, color: cat.slot, isSystemCategory: true },
-        })
-      )
-    );
+    const { error } = await supabase
+      .from("categories")
+      .upsert(
+        DEFAULT_CATEGORIES.map((cat) => ({
+          id: newId(),
+          name: cat.name,
+          type: cat.type,
+          color: cat.slot,
+          is_system_category: true,
+        })),
+        { onConflict: "name", ignoreDuplicates: true }
+      );
+    if (error) throw error;
     categoriesSeeded = true;
   }
-  const categories = await db.category.findMany();
+  const { data, error } = await supabase.from("categories").select("*").returns<CategoryRow[]>();
+  if (error) throw error;
+  const categories = (data ?? []).map(mapCategory);
   return new Map(categories.map((c) => [c.name, c.id]));
 }
 
@@ -123,12 +132,27 @@ export async function ensureDefaultCategories(): Promise<Map<string, string>> {
 export async function categorizeUncategorizedTransactions(userId: string): Promise<void> {
   const categoryIdByName = await ensureDefaultCategories();
 
-  const ownAccounts = await db.account.findMany({ where: { userId } });
-  const ownIbans = new Set(ownAccounts.map((a) => normalizeIban(decryptIban(a.ibanEncrypted))));
+  const { data: ownAccountRows, error: accountsError } = await supabase
+    .from("accounts")
+    .select("*")
+    .eq("user_id", userId)
+    .returns<AccountRow[]>();
+  if (accountsError) throw accountsError;
 
-  const uncategorized = await db.transaction.findMany({
-    where: { categoryId: null, account: { userId } },
-  });
+  const ownAccounts = (ownAccountRows ?? []).map(mapAccount);
+  const ownIbans = new Set(ownAccounts.map((a) => normalizeIban(decryptIban(a.ibanEncrypted))));
+  const ownAccountIds = ownAccounts.map((a) => a.id);
+  if (ownAccountIds.length === 0) return;
+
+  const { data: uncategorizedRows, error: txError } = await supabase
+    .from("transactions")
+    .select("*")
+    .is("category_id", null)
+    .in("account_id", ownAccountIds)
+    .returns<TransactionRow[]>();
+  if (txError) throw txError;
+
+  const uncategorized = (uncategorizedRows ?? []).map(mapTransaction);
 
   for (const tx of uncategorized) {
     const counterpartyIban = tx.counterpartyIbanEncrypted ? decryptIban(tx.counterpartyIbanEncrypted) : null;
@@ -143,12 +167,13 @@ export async function categorizeUncategorizedTransactions(userId: string): Promi
       categoryName = matchKeywordCategory(tx.description) ?? UNCATEGORIZED;
     }
 
-    await db.transaction.update({
-      where: { id: tx.id },
-      data: {
-        categoryId: categoryIdByName.get(categoryName) ?? null,
-        isTransfer,
-      },
-    });
+    const { error: updateError } = await supabase
+      .from("transactions")
+      .update({
+        category_id: categoryIdByName.get(categoryName) ?? null,
+        is_transfer: isTransfer,
+      })
+      .eq("id", tx.id);
+    if (updateError) throw updateError;
   }
 }

@@ -1,34 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabase } from "@/lib/db";
 import { runIngImport } from "@/lib/import";
 import { maskIban } from "@/lib/iban";
 import { getSession } from "@/lib/auth/session";
+import type { AccountRow, ImportRow } from "@/lib/db/types";
+
+type ImportWithAccountRow = ImportRow & {
+  account: Pick<AccountRow, "id" | "name" | "iban_last_four" | "bank_name"> | null;
+};
 
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const imports = await db.import.findMany({
-    where: { userId: session.user.id },
-    orderBy: { importedAt: "desc" },
-    include: { account: true },
-    take: 50,
-  });
+  const { data, error } = await supabase
+    .from("imports")
+    .select("*, account:accounts(id, name, iban_last_four, bank_name)")
+    .eq("user_id", session.user.id)
+    .order("imported_at", { ascending: false })
+    .limit(50)
+    .returns<ImportWithAccountRow[]>();
+  if (error) throw error;
 
   return NextResponse.json(
-    imports.map((imp) => ({
+    (data ?? []).map((imp) => ({
       id: imp.id,
-      fileName: imp.fileName,
+      fileName: imp.file_name,
       status: imp.status,
-      importedAt: imp.importedAt,
-      dateFrom: imp.dateFrom,
-      dateTo: imp.dateTo,
-      rowsSeen: imp.rowsSeen,
-      rowsImported: imp.rowsImported,
-      duplicatesSkipped: imp.duplicatesSkipped,
+      importedAt: imp.imported_at,
+      dateFrom: imp.date_from,
+      dateTo: imp.date_to,
+      rowsSeen: imp.rows_seen,
+      rowsImported: imp.rows_imported,
+      duplicatesSkipped: imp.duplicates_skipped,
       errors: imp.errors,
       account: imp.account
-        ? { id: imp.account.id, name: imp.account.name, maskedIban: maskIban(imp.account.ibanLastFour, imp.account.bankName) }
+        ? { id: imp.account.id, name: imp.account.name, maskedIban: maskIban(imp.account.iban_last_four, imp.account.bank_name) }
         : null,
     }))
   );

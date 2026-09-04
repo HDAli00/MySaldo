@@ -1,15 +1,21 @@
 import Link from "next/link";
-import { db } from "@/lib/db";
+import { supabase } from "@/lib/db";
+import { listAccountsForUser } from "@/lib/db/accounts";
 import { maskIban } from "@/lib/iban";
 import { requireUser } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
 async function getAccounts(userId: string) {
-  const accounts = await db.account.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });
+  const accounts = (await listAccountsForUser(userId)).sort(
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+  );
   return Promise.all(
     accounts.map(async (account) => {
-      const transactionCount = await db.transaction.count({ where: { accountId: account.id } });
+      const { count: transactionCount } = await supabase
+        .from("transactions")
+        .select("*", { count: "exact", head: true })
+        .eq("account_id", account.id);
       return {
         id: account.id,
         name: account.name,
@@ -17,7 +23,7 @@ async function getAccounts(userId: string) {
         bankName: account.bankName,
         latestBalance: account.latestBalance,
         latestTransactionDate: account.latestTransactionDate,
-        transactionCount,
+        transactionCount: transactionCount ?? 0,
       };
     })
   );

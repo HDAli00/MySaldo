@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import { supabase } from "@/lib/db";
+import { listAccountsForUser, resolveAccountScope } from "@/lib/db/accounts";
+import type { TransactionRow } from "@/lib/db/types";
 import { maskIban } from "@/lib/iban";
 import { assignChartColors, categoryColorVar } from "@/lib/categories";
 import { dateKey, monthBounds, toMonthString } from "@/lib/date-range";
 import { getSession } from "@/lib/auth/session";
 
 const MAX_CATEGORY_SLOTS = 7; // + one "Other" bucket, per the dataviz 8-series cap
+
+type TransactionWithCategoryRow = TransactionRow & { category: { name: string } | null };
 
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
@@ -16,30 +19,40 @@ export async function GET(request: NextRequest) {
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const user = session.user;
 
+  const accounts = await listAccountsForUser(user.id);
+  const scopeIds = resolveAccountScope(accounts, accountId);
+  const account = accountId ? (accounts.find((a) => a.id === accountId) ?? null) : null;
+
   let month = params.get("month");
   if (!month) {
-    const latest = await db.transaction.findFirst({
-      where: { account: { userId: user.id }, ...(accountId ? { accountId } : {}) },
-      orderBy: { transactionDate: "desc" },
-    });
-    month = toMonthString(latest?.transactionDate ?? new Date());
+    let latestDate: Date | null = null;
+    if (scopeIds.length > 0) {
+      const { data: latestRow } = await supabase
+        .from("transactions")
+        .select("transaction_date")
+        .in("account_id", scopeIds)
+        .order("transaction_date", { ascending: false })
+        .limit(1)
+        .maybeSingle<{ transaction_date: string }>();
+      latestDate = latestRow ? new Date(latestRow.transaction_date) : null;
+    }
+    month = toMonthString(latestDate ?? new Date());
   }
   const { start, end } = monthBounds(month);
 
-  const where: Prisma.TransactionWhereInput = {
-    account: { userId: user.id },
-    transactionDate: { gte: start, lt: end },
-    ...(accountId ? { accountId } : {}),
-  };
-
-  const [transactions, account] = await Promise.all([
-    db.transaction.findMany({
-      where,
-      include: { category: true, account: true },
-      orderBy: { transactionDate: "desc" },
-    }),
-    accountId ? db.account.findFirst({ where: { id: accountId, userId: user.id } }) : null,
-  ]);
+  let transactions: TransactionWithCategoryRow[] = [];
+  if (scopeIds.length > 0) {
+    const { data, error } = await supabase
+      .from("transactions")
+      .select("*, category:categories(name)")
+      .in("account_id", scopeIds)
+      .gte("transaction_date", start.toISOString())
+      .lt("transaction_date", end.toISOString())
+      .order("transaction_date", { ascending: false })
+      .returns<TransactionWithCategoryRow[]>();
+    if (error) throw error;
+    transactions = data ?? [];
+  }
 
   let income = 0;
   let expenses = 0;
@@ -48,10 +61,11 @@ export async function GET(request: NextRequest) {
 
   for (const tx of transactions) {
     const amount = Number(tx.amount);
-    const day = dateKey(tx.transactionDate);
+    const transactionDate = new Date(tx.transaction_date);
+    const day = dateKey(transactionDate);
     const dayEntry = dailyTotals.get(day) ?? { income: 0, expense: 0 };
 
-    if (tx.isTransfer) {
+    if (tx.is_transfer) {
       // Transfers between the user's own accounts are excluded from income/expense
       // and from the category breakdown entirely — they are not spending.
       dailyTotals.set(day, dayEntry);
@@ -120,11 +134,11 @@ export async function GET(request: NextRequest) {
     dailyCashFlow,
     recentTransactions: transactions.slice(0, 6).map((tx) => ({
       id: tx.id,
-      date: tx.transactionDate,
+      date: tx.transaction_date,
       description: tx.description,
       amount: tx.amount,
       direction: tx.direction,
-      isTransfer: tx.isTransfer,
+      isTransfer: tx.is_transfer,
       category: tx.category?.name ?? null,
     })),
   });

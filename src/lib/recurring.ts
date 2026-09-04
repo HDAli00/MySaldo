@@ -1,6 +1,7 @@
-import { db } from "@/lib/db";
+import { supabase } from "@/lib/db";
 import { monthBounds, nextMonthString } from "@/lib/date-range";
 import { FIXED_EXPENSE_CATEGORIES } from "@/lib/categories";
+import type { AccountRow, TransactionRow } from "@/lib/db/types";
 
 export interface UpcomingExpense {
   description: string;
@@ -9,6 +10,8 @@ export interface UpcomingExpense {
   expectedDate: string;
   occurrences: number;
 }
+
+type TransactionWithCategoryRow = TransactionRow & { category: { name: string } | null };
 
 function normalizeDescription(description: string): string {
   return description.trim().toUpperCase().replace(/\s+/g, " ");
@@ -42,35 +45,45 @@ export async function detectUpcomingFixedExpenses(
   const lookbackStart = new Date(referenceEnd);
   lookbackStart.setUTCMonth(lookbackStart.getUTCMonth() - 4);
 
-  const transactions = await db.transaction.findMany({
-    where: {
-      account: { userId },
-      ...(accountId ? { accountId } : {}),
-      direction: "EXPENSE",
-      isTransfer: false,
-      transactionDate: { gte: lookbackStart, lt: referenceEnd },
-    },
-    include: { category: true },
-    orderBy: { transactionDate: "asc" },
-  });
+  const { data: ownAccountRows, error: accountsError } = await supabase
+    .from("accounts")
+    .select("*")
+    .eq("user_id", userId)
+    .returns<AccountRow[]>();
+  if (accountsError) throw accountsError;
+
+  const ownAccountIds = accountId ? [accountId] : (ownAccountRows ?? []).map((a) => a.id);
+  if (ownAccountIds.length === 0) return { targetMonth, items: [] };
+
+  const { data: txRows, error: txError } = await supabase
+    .from("transactions")
+    .select("*, category:categories(name)")
+    .in("account_id", ownAccountIds)
+    .eq("direction", "EXPENSE")
+    .eq("is_transfer", false)
+    .gte("transaction_date", lookbackStart.toISOString())
+    .lt("transaction_date", referenceEnd.toISOString())
+    .order("transaction_date", { ascending: true })
+    .returns<TransactionWithCategoryRow[]>();
+  if (txError) throw txError;
 
   const groups = new Map<
     string,
     { originalDescription: string; category: string | null; occurrences: { date: Date; amount: number }[] }
   >();
 
-  for (const tx of transactions) {
+  for (const tx of txRows ?? []) {
     const categoryName = tx.category?.name;
     if (!categoryName || !FIXED_EXPENSE_CATEGORIES.has(categoryName)) continue;
 
     const key = normalizeDescription(tx.description);
     const group = groups.get(key) ?? {
       originalDescription: tx.description.trim(),
-      category: tx.category?.name ?? null,
+      category: categoryName,
       occurrences: [],
     };
-    group.occurrences.push({ date: tx.transactionDate, amount: Number(tx.amount) });
-    group.category = tx.category?.name ?? group.category;
+    group.occurrences.push({ date: new Date(tx.transaction_date), amount: Number(tx.amount) });
+    group.category = categoryName;
     groups.set(key, group);
   }
 
